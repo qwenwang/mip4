@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    
+    <link href="css/reset.css" rel="stylesheet" />
+    <meta name="author" content="archychu">
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=1024" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <link rel="shortcut icon" href="css/favicon.png" />
+    <link rel="apple-touch-icon" href="css/apple-touch-icon.png" />
+    <!-- Code Prettifier: -->
+<link href="css/highlight.css" type="text/css" rel="stylesheet" />
+<script type="text/javascript" src="js/highlight.pack.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+
+    <link href="css/style.css" rel="stylesheet" />
+<link href='http://fonts.googleapis.com/css?family=Open+Sans:300italic,400italic,800italic,300,400,800' rel='stylesheet' type='text/css'>    
+
+
+  </head>
+
+  <body>
+  <div class="fallback-message">
+  <p>Your browser <b>doesn't support the features required</b> by impress.js, so you are presented with a simplified version of this presentation.</p>
+  <p>For the best experience please use the latest <b>Chrome</b>, <b>Safari</b> or <b>Firefox</b> browser.</p>
+  </div>
+    <div id="impress">
+    <div class='step' >
+    
+<h2>第四部分</h2>
+
+<blockquote>
+<p><em>2013.11.26</em></p>
+
+<p><strong>陈译 汪乾文 朱霖潮</strong></p>
+</blockquote>
+</div>
+      <div class='step' >
+    
+<ul>
+<li>  <strong>文件系统</strong></li>
+<li>  <strong>读写等文件操作</strong></li>
+<li>  <strong>执行一个文件</strong></li>
+</ul>
+</div>
+      <div class='step' >
+    
+<h2>Part 1 文件系统</h2>
+
+<h3>几个参数</h3>
+<pre><code class='prettyprint '>#define ONE_SECTOR          512
+#define ONE_CLUSTER         ((1) * (ONE_SECTOR))
+#define ONE_PAGE            ((1) * (ONE_CLUSTER))
+</code></pre></div>
+      <div class='step' >
+    
+<h3>磁盘布局</h3>
+<pre><code class='prettyprint '>FAT_LIST能稍微快一点吧
+</code></pre>
+<blockquote>
+<pre><code class='prettyprint '>            |--------------------------|
+ SECTOR 0   |  number of fat table     | <- OFF 0
+            |--------------------------|
+            | cluster num of the first | <- OFF 4
+            |fat table, and it is 'set'|
+            |       to be 1.           |
+            |--------------------------|
+            |cluster num of the second | <- OFF 8
+            | fat table                |
+            |--------------------------|
+            |               ..         |
+            |               ..         |
+            |  end of the first sector |
+            +--------------------------+
+</code></pre></blockquote>
+
+<p><em>也就是说我们总共有<code class='inline prettyprint'>大约</code>512 × (512 / 4)× 512 = 32M的硬盘</em>
+<strong>够大了！</strong></p>
+</div>
+      <div class='step' >
+    
+<h2>SECTOR 1</h2>
+
+<p><strong>第一个FAT表</strong></p>
+
+<ul>
+<li>  FAT中，结束符为0xffff_ffff , 空为0x0000_0000</li>
+<li>  fat项: 刚开始的1(<code class='inline prettyprint'>fat_list</code>)
++ 1(<code class='inline prettyprint'>fat_table_1</code>)
++ 1(根目录区)
++ 64(OS部分)个扇区已经被分配，初始化为-1,其他部分初始化为0</li>
+</ul>
+</div>
+      <div class='step' >
+    
+<h2>SECTOR 2</h2>
+
+<ul>
+<li>  只有一个目录区</li>
+<li>  一个文件在目录区会留下这样一个记录:</li>
+</ul>
+<pre><code class='prettyprint '>#define FILE_NAME_LEN       15
+typedef struct
+{
+    char dirName[FILE_NAME_LEN]; // 文件名
+    char dirAttributes;          // 文件属性, 暂时没有用到
+    int  dirStartCluster;        // 文件起始簇号
+    int  dirFileSize;        // 表示文件的长度, 单位为byte
+} DirEntry;                  // size of this is 24 bytes!
+</code></pre>
+<ul>
+<li>  比如根目录区初始化为：</li>
+</ul>
+<pre><code class='prettyprint '>    dirName         "/"
+    dirStartCluster 2
+    dirFileSize     16
+</code></pre></div>
+      <div class='step' >
+    
+<h2>SECTOR 3-66</h2>
+
+<ul>
+<li>  所谓的<code class='inline prettyprint'>os</code>部分，包括<code class='inline prettyprint'>.data</code>, <code class='inline prettyprint'>.text</code></li>
+<li>  <code class='inline prettyprint'>.data</code>和<code class='inline prettyprint'>.text</code>分别为<code class='inline prettyprint'>16K</code>。</li>
+<li>  也就是说空闲的扇区是从<code class='inline prettyprint'>67</code>号开始的</li>
+</ul>
+</div>
+      <div class='step' >
+    
+<h3>内存分布</h3>
+
+<ul>
+<li>  ROM和RAM统一编址</li>
+<li>  开机时PC &lt;- 0</li>
+</ul>
+<pre><code class='prettyprint '>    $a0 = 512
+    $a1 = 3 * 512
+    $a2 = 64 * 512     ; 读取OS部分，偏移扇区为3, 大小64个扇区
+    jal read_disk
+    j       512        ; 开始OS初始化
+read_disk:
+    ...
+</code></pre></div>
+      <div class='step' >
+    
+<ul>
+<li><p><strong>OS初始化, 几个数据结构：</strong></p>
+
+<ul>
+<li>  Kernel_buffer:</li>
+</ul>
+<pre><code class='prettyprint '>#define KERNEL_BUF_SECTOR   10
+typedef struct
+{
+    /* buffer中这个cluster的磁盘中的偏移 
+       初始化为-1
+     */
+    int cluster_offset[KERNEL_BUF_SECTOR];
+    /* 一个扇区的buffer */
+    char cluster_buffer[KERNEL_BUF_SECTOR][ONE_SECTOR];
+    /* 这个扇区打开后是否被写过
+       初始化为0
+     */
+    int cluster_is_dirty[KERNEL_BUF_SECTOR];
+    /* 指向下一个空的buffer */
+    int next_free;
+} Kernel_buf;
+</code></pre></li>
+</ul>
+</div>
+      <div class='step' >
+    <pre><code class='prettyprint '>    initialize  next_free = 0
+        -----
+    0-> | F | - next_free(1) - next_free(4)
+        -----
+    1-> | F | - next_free(2)
+        -----
+    2-> | F | - next_free(3)
+        -----
+</code></pre></div>
+      <div class='step' >
+    
+<ul>
+<li>  <strong>OS初始化, 几个数据结构：</strong>
+
+<ul>
+<li>  保存所有fat表的地址</li>
+</ul></li>
+</ul>
+<pre><code class='prettyprint '>#define MAX_FAT_TABLE       (ONE_SECTOR / 4 - 1)
+int fat_table_array[MAX_FAT_TABLE];
+int fat_table_size;
+</code></pre></div>
+      <div class='step' >
+    
+<ul>
+<li>  <strong>OS初始化</strong>
+
+<ul>
+<li>  考虑到内存中会有两个用户程序，一个是接受输入，一个是我们要实现的应用程序，我们希望实现简单的页表实现<code class='inline prettyprint'>j</code>等使用绝对地址引用的指令，和.data段的地址取址。</li>
+</ul></li>
+</ul>
+</div>
+      <div class='step' >
+    <pre><code class='prettyprint '>#define MAX_PROCESS_NUM     2
+/* 用于标示当前运行的程序 */
+int cur_process = 0;
+
+#define MAX_TEXT_PAGE_NUM           16     
+#define MAX_DATA_PAGE_NUM           4
+#define USER_MAX_PAGE_NUM           (MAX_TEXT_PAGE_NUM \
+                                    + MAX_DATA_PAGE_NUM)
+/* 存放实际物理地址 */
+int page_table[MAX_PROCESS_NUM][USER_MAX_PAGE_NUM];
+</code></pre></div>
+      <div class='step' >
+    
+<p><strong>大概的地址映射过程是这样的：</strong></p>
+
+<ul>
+<li>  汇编的时候 
+
+<ul>
+<li>  .text起始地址<code class='inline prettyprint'>0x0040_0000</code></li>
+<li>  .data起始地址<code class='inline prettyprint'>0x1001_0000</code></li>
+</ul></li>
+</ul>
+</div>
+      <div class='step' >
+    
+<ul>
+<li>  传给MMU addr</li>
+</ul>
+
+<p><code class='inline prettyprint'>int sign = addr & 0xffff0000;</code></p>
+
+<p><code class='inline prettyprint'>if (sign == 0x00400000)</code></p>
+
+<p><code class='inline prettyprint'>return ((page_table[cur_process][(addr >> 9)</code></p>
+
+<p><code class='inline prettyprint'>- (TEXT_START >> 9)]) << 9 ) | (addr & 0x000001ff);</code></p>
+
+<p><code class='inline prettyprint'>else if (sign == 0x10010000)</code></p>
+
+<p><code class='inline prettyprint'>return ((page_table[cur_process][(addr >> 9)</code></p>
+
+<p><code class='inline prettyprint'>- (TEXT_START >> 9) + MAX_TEXT_PAGE_NUM]) "<<" 9) | (addr & 0x000001ff);</code></p>
+
+<p><code class='inline prettyprint'>else if (sign == 0xc000000)</code></p>
+
+<p><code class='inline prettyprint'>; // 显存地址</code></p>
+</div>
+      <div class='step' >
+    <pre><code class='prettyprint '>#define OS_PAGE_NUM                 64
+/* 所有的程序共享一个栈，即使是syscall调用也是，
+   栈总共有4K，实际内存紧接着OS .data后
+*/
+#define GLOBAL_STACK_NUM            8
+
+/* 因为只有1个应用程序加载，因此只需要这样两个变量 */
+int old_free_page;
+// 初始化空闲的page
+int next_free_page = 1 + OS_PAGE_NUM + GLOBAL_STACK_NUM;     
+</code></pre>
+<p>当执行一个文件，开始分配页的时候时：</p>
+
+<p><code class='inline prettyprint'>old_free_page = next_free_page;</code></p>
+
+<p>此后每分配一页的空间<code class='inline prettyprint'>next_free_page++;</code></p>
+</div>
+      <div class='step' >
+    
+<ul>
+<li>  <strong>OS初始化</strong>
+
+<ul>
+<li>  文件的概念</li>
+</ul></li>
+</ul>
+<pre><code class='prettyprint '>/* 如果打开的文件超过10就open失败 */
+#define MAX_OPEN_FILE       10
+typedef struct
+{
+    int free_file_count; // initialize with MAX_OPEN_FILE
+    int is_free[MAX_OPEN_FILE];
+    /* 根目录中的记录 */
+    DirEntry file_entry[MAX_OPEN_FILE];
+    /* 当前文件的读写位置，可以通过sys_lseek修改 */
+    int fptr[MAX_OPEN_FILE];
+    /* 该文件在根目录中的偏移，方便追加文件后修改文件大小 */
+    int rootDirOffset[MAX_OPEN_FILE];
+} DirEntry_M;
+DirEntry_M dir_entry_m;
+DirEntry curDirEntry;   // 保存根目录项的目录信息
+</code></pre></div>
+      <div class='step' >
+    
+<ul>
+<li> 文件操作
+
+<ul>
+<li>  创建文件(char *create_name)
+
+<ul>
+<li>  找到目录区的结束</li>
+<li>  在fat表中找到一个空闲的簇k, 并修改为0x0,设置is_dirty</li>
+<li>  设置文件名，大小为0, 起始簇为k</li>
+<li>  设置is_dirty</li>
+<li>  修改curDirEntry的大小</li>
+</ul></li>
+</ul></li>
+</ul>
+</div>
+      <div class='step' >
+    
+<ul>
+<li> 文件操作
+
+<ul>
+<li>  打开文件(char *file_name)
+
+<ul>
+<li>  确定打开文件个数在<code class='inline prettyprint'>MAX_OPEN_FILE</code>以内</li>
+<li>  遍历根目录区，找到该项</li>
+<li>  遍历文件标示符的数组，找到一个<code class='inline prettyprint'>free</code>项<code class='inline prettyprint'>i</code></li>
+<li>  修改<code class='inline prettyprint'>free_file_count--; file_entry</code>为找到的项; <code class='inline prettyprint'>fptr</code>初始为<code class='inline prettyprint'>0</code>; 
+<code class='inline prettyprint'>is_free为0, rootDirOffset</code>为找到的目录偏移</li>
+<li>  返回<code class='inline prettyprint'>i</code>为文件标示符</li>
+</ul></li>
+</ul></li>
+</ul>
+</div>
+      <div class='step' >
+    
+<ul>
+<li><p>文件操作</p>
+
+<ul>
+<li><p><code class='inline prettyprint'>seek(int fid, int offset, FILE_POS file_pos)</code></p>
+
+<ul>
+<li> </li>
+</ul>
+<pre><code class='prettyprint '>    typedef enum
+    {
+        M_SEEK_SETS,
+        M_SEEK_CUR,
+    } FILE_POS;
+</code></pre>
+<ul>
+<li>  直接修改fptr即可</li>
+</ul></li>
+</ul></li>
+</ul>
+</div>
+      <div class='step' >
+    
+<ul>
+<li> 文件操作
+
+<ul>
+<li>  读文件<code class='inline prettyprint'>(int fid, char *buf, int size)</code>
+
+<ul>
+<li>  这个buf是用户开的缓冲区，</li>
+<li>  根据fptr找到开始簇，读到系统buffer，然后直接写到buf中，
+因为此时的cur_process还是不变的,不需要做映射。同时递增fptr</li>
+<li>  根据读的大小重复上述步骤</li>
+</ul></li>
+</ul></li>
+</ul>
+</div>
+      <div class='step' >
+    
+<ul>
+<li>  文件操作
+
+<ul>
+<li>  写文件<code class='inline prettyprint'>(int fid, char *buf, int size)</code>
+
+<ul>
+<li>  主要步骤与read类似</li>
+<li>  不同的是，如果超过原来的文件大小，需要分配空间（修改fat，与create中拿到cluster类似）
+同时修改文件大小</li>
+</ul></li>
+</ul></li>
+</ul>
+</div>
+      <div class='step' >
+    
+<ul>
+<li>  文件操作
+
+<ul>
+<li>  关闭文件<code class='inline prettyprint'>(int fid)</code>
+
+<ul>
+<li>  修改fid的<code class='inline prettyprint'>is_free</code>为0; <code class='inline prettyprint'>free_file_count++</code></li>
+<li>  注意此时不会进行写回磁盘的操作，只有在<code class='inline prettyprint'>dirty</code>的时候才会写回</li>
+<li>  因此系统退出时有一个系统调用为<code class='inline prettyprint'>force_write_back()</code></li>
+</ul></li>
+</ul></li>
+</ul>
+</div>
+      <div class='step' >
+    
+<ul>
+<li><p>文件操作</p>
+
+<ul>
+<li><p>执行文件<code class='inline prettyprint'>(char *file_name)</code></p>
+
+<ul>
+<li>  打开文件</li>
+<li>  读可执行文件的头，我们的可执行文件头：</li>
+</ul>
+<pre><code class='prettyprint '>        0-3: text_seg start_offset(measure by bytes)
+        4-7: text_seg size(no more than 8k)
+        8-11: data_seg start_offset
+        12-15: data_seg size(no more than 2k)
+        16-19: debug_start_offset
+        20-23: debug size
+</code></pre></li>
+<li><p>开始分配页，并保存原来的<code class='inline prettyprint'>free_page</code>起始<code class='inline prettyprint'>old_free_page = next_free_page;</code></p></li>
+<li><p>把文件内容读到新分配的页中</p></li>
+<li><p><code class='inline prettyprint'>cur_process++</code>; 执行<code class='inline prettyprint'>jal 0x0040_0000</code></p></li>
+</ul></li>
+</ul>
+</div>
+      <div class='step' >
+    
+<ul>
+<li>  文件操作
+
+<ul>
+<li>  退出执行
+
+<ul>
+<li>    <code class='inline prettyprint'>next_free_page = old_free_page;</code></li>
+<li>    <code class='inline prettyprint'>cur_process--;</code></li>
+<li>    <code class='inline prettyprint'>jr $ra</code>     //此时$ra的物理地址能够被找到</li>
+</ul></li>
+</ul></li>
+</ul>
+</div>
+      <div class='step' >
+    
+<ul>
+<li>  <em>NOTE:</em>
+
+<ul>
+<li>  我们所有的系统调用与函数调用类似，直接使用$ra, 
+并且$ra入栈(也可以不使用$ra)</li>
+</ul></li>
+</ul>
+</div>
+      <div class='step' >
+    
+<h2><strong>谢谢</strong></h2>
+
+      </div>
+    <script src="js/impress.js"></script>
+    <script>impress().init();</script>
+  </body>
+</html>
+    
